@@ -75,28 +75,33 @@ Use the provided `evaluate.sh` script to run multiple presses simultaneously acr
 
 Two axes of parallelism are available, and they are for different situations:
 
-- **Over configurations** (`evaluate.sh`, `evaluate_sparse_scalar.sh`, `evaluate_dense_baseline.sh`): one (length, press, top-k) cell per GPU. Use it when the sweep has at least as many cells as GPUs.
-- **Over rows** (`evaluate_sharded.py` for eviction presses, `evaluate_sparse_sharded.py` for the GQA indexer): one configuration split across every GPU, scored once over the union. Use it to get a single number quickly, or for a sweep with fewer cells than GPUs.
+- **Over configurations** (`evaluate.sh`): one (length, press, top-k) cell per GPU. Use it when the sweep has at least as many cells as GPUs.
+- **Over rows** (`evaluate_sharded.py` for eviction presses, `evaluate_indexmem_sharded.py` for the GQA indexer): one configuration split across every GPU, scored once over the union. Use it to get a single number quickly, or for a sweep with fewer cells than GPUs.
 
 Row sharding defaults to splitting by **context**, because a context's questions share one prefill. Pass `--shard_by row` for datasets where every row shares a single context — `math500` and `aime25` put the whole problem in `question` and leave `context` a single space, so context sharding would put the entire dataset on shard 0 and idle the other GPUs.
 
 ### Reasoning and long-context multiple choice
 
-`evaluate_reasoning_longbench.sh` runs `math500`, `aime25` and `longbench-v2` for both the dense
-baseline and the sparse GQA indexer, then `summarize_reasoning_longbench.py` tables the results:
+The reasoning and long-context benchmarks (`math500`, `aime25`, `longbench`) ship as presets in
+`configs/evaluation/`, run through the IndexMem++ entrypoints:
 
 ```bash
-bash evaluate_reasoning_longbench.sh                # dense arm, then the indexer sweep
-ARMS=sparse TASKS=math500 bash evaluate_reasoning_longbench.sh   # one arm, one task
-python summarize_reasoning_longbench.py --output_dir ./results_reasoning_longbench
+# one configuration on a single GPU
+python evaluate_indexmem.py --config_file ../configs/evaluation/math500.yaml
+# one configuration split across 8 GPUs, scored once over the union
+python evaluate_indexmem_sharded.py --config_file ../configs/evaluation/aime25.yaml --ngpu 8
 ```
 
-It exists as its own script because three things about these datasets differ from RULER in ways that
-corrupt a number rather than raising:
+Any field in the YAML can be overridden on the command line. For the dense / eviction-press
+reference arm, use `evaluate.py` and `evaluate_sharded.py` with the same dataset and decoding
+settings, so the two arms differ only by compression.
 
-- **`longbench-v2` needs `--max_context_length` pinned.** Its contexts reach 2.3M tokens (median 127K), the pipeline defaults the cap to `tokenizer.model_max_length` (131072 for Qwen3), and Qwen3-8B has 40960 RoPE positions — so the default silently feeds the model several times its positional range.
-- **`math500`/`aime25` need `--shard_by row`**, per the note above.
-- **They are generative** (`max_new_tokens` 4096 and 32000, against RULER's ~50), so decode dominates and the reported `answered` column matters: a missing `\boxed{}` means a truncated or looping trace, which is a different failure from a wrong answer.
+These benchmarks get their own presets because three things about them differ from RULER in ways
+that corrupt a number rather than raising:
+
+- **`longbench-v2` needs `max_context_length` pinned.** Its contexts reach 2.3M tokens (median 127K), the pipeline defaults the cap to `tokenizer.model_max_length` (131072 for Qwen3), and Qwen3-8B has 40960 RoPE positions — so the default silently feeds the model several times its positional range.
+- **`math500`/`aime25` need `shard_by: row`**, per the note above.
+- **They are generative** (`max_new_tokens` 16384 and 32768 in the presets, against RULER's ~50), so decode dominates and the reported `answered` column matters: a missing `\boxed{}` means a truncated or looping trace, which is a different failure from a wrong answer.
 
 `aime25` runs at `fraction 1.0` because it is 30 problems in total; at 0.1 it would be three. Its 95%
 Wilson interval is roughly ±18 points, so read it as a smoke test rather than a ranking.

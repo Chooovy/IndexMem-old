@@ -22,11 +22,7 @@ class PrefillContext:
         self.window_size = config.window_size
         self.cache_budget_ratio = config.cache_budget_ratio
         self.head_budget = config.head_budget
-        self.head_budget_table = (
-            torch.load(config.head_budget_table, map_location="cpu", weights_only=True)["table"]
-            if config.head_budget == "static"
-            else None
-        )
+        self.head_budget_table = self._load_static_table(model, config) if config.head_budget == "static" else None
         self.min_head_budget = config.min_head_budget
         self.cmp_slots = config.cmp_slots if build_cmp else 0
         self.block_k = 64
@@ -39,6 +35,34 @@ class PrefillContext:
         self._cmp = {}
         self._cmp_at = {}
         self._cmp_r = {}
+
+    @staticmethod
+    def _load_static_table(model, config: IndexMemConfig) -> torch.Tensor:
+        """Load an offline head-budget table, checking it belongs to this model and budget.
+
+        An offline table carries the budget it was fitted at, and nothing downstream reads
+        `cache_budget` once the table is in use. A table from another model or another budget
+        therefore evaluates at a capacity the run does not report, so both are rejected here
+        rather than silently honoured.
+        """
+        payload = torch.load(config.head_budget_table, map_location="cpu", weights_only=True)
+        table = payload["table"]
+        cfg = model.config
+        expected = (cfg.num_hidden_layers, cfg.num_key_value_heads)
+        if tuple(table.shape) != expected:
+            raise ValueError(
+                f"head_budget_table has shape {tuple(table.shape)}, but {cfg.name_or_path} needs "
+                f"{expected} (layers, KV heads); the table was fitted for another model"
+            )
+        per_layer = int(config.cache_budget) * expected[1]
+        totals = table.sum(-1)
+        if not bool((totals == per_layer).all()):
+            raise ValueError(
+                f"head_budget_table allocates {sorted(set(totals.tolist()))} entries per layer, but "
+                f"cache_budget={config.cache_budget} over {expected[1]} KV heads is {per_layer}; "
+                "refit the table at this budget or set cache_budget to the one it was fitted at"
+            )
+        return table
 
     def _capture_hook(self, module, args, kwargs):
         self._hidden_states[module.layer_idx] = kwargs["hidden_states"]
@@ -127,12 +151,15 @@ class PrefillContext:
             q_kwargs["n_kv_heads"] = key.shape[1]
         q_idx = scorer.project_q(hidden_states, cos, sin, **q_kwargs)
         value_states_new = value[:, :, previous_len:, :]
+        # `key_offset` positions this chunk inside the sequence. It feeds the retention rate when
+        # that is enabled, but it also feeds the `pos_slope` recency tilt either way, so a chunk
+        # scored at offset 0 would give freshly appended keys the smallest positional bonus.
         k_idx_new = scorer.project_k(
             hidden_states,
             cos,
             sin,
             value_states=value_states_new,
-            **{"key_offset": previous_len} if self._decay_active else {},
+            key_offset=previous_len,
         )
         k_idx = k_idx_new if previous is None else torch.cat([previous, k_idx_new], dim=1)
         self._k_idx[layer_idx] = k_idx
@@ -229,7 +256,7 @@ class PrefillContext:
         return torch.einsum("bhqd,bkd->bhk", q_idx[:, :, ref : ref + 1], k_idx)[0].float()
 
     def _attend_with_cmp(self, module, query, key, value, scaling, q_idx, k_idx, k_len) -> torch.Tensor:
-        from kvpress.indexmem.inference.attention import fuse_attention
+        from kvpress.indexmem.inference.attention import _merge_lse
         from kvpress.indexmem.kernels.prefill_attention import _flex, qi_block_mask
 
         layer_idx = int(module.layer_idx)
@@ -264,11 +291,14 @@ class PrefillContext:
         kc = centroid_keys.to(query.device).float().repeat_interleave(group, 0)
         vc = centroid_values.to(query.device).float().repeat_interleave(group, 0)
         bc = log_cluster_mass.to(query.device).float().repeat_interleave(group, 0)
-        l_cmp = torch.einsum("bhqd,hrd->bhqr", query.float(), kc) * scaling + bc.view(1, n_q_heads, 1, -1)
-        w = l_cmp.exp()
-        n = torch.einsum("bhqr,hrd->bhqd", w, vc)
-        d = w.sum(-1)
-        out = fuse_attention(o_s, lse_s, n, d, group=1)
+        z = torch.einsum("bhqd,hrd->bhqr", query.float(), kc) * scaling + bc.view(1, n_q_heads, 1, -1)
+        empty = ~torch.isfinite(z.amax(-1, keepdim=True))
+        m = torch.where(empty, torch.zeros_like(z[..., :1]), z.amax(-1, keepdim=True))
+        w = (z - m).exp()
+        den = w.sum(-1, keepdim=True).clamp(min=1e-30)
+        o_cmp = torch.einsum("bhqr,hrd->bhqd", w / den, vc)
+        lse_cmp = torch.where(empty, torch.full_like(m, -float("inf")), m + den.log()).squeeze(-1)
+        out = _merge_lse([(o_s.float(), lse_s.float()), (o_cmp, lse_cmp)]).to(o_s.dtype)
         return out.transpose(1, 2).contiguous()
 
     def _attend_dense(self, query, key, value, scaling) -> torch.Tensor:

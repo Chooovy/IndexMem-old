@@ -78,7 +78,8 @@ class EvaluationConfig:
     # before it ever reaches \boxed{}.
     enable_thinking: bool = False
 
-    # Sampled decoding and pass@1 rollouts, mirroring evaluate_sparse.py field for field.
+    # Sampled decoding and pass@1 rollouts, mirroring the IndexMem++ sparse-attention driver
+    # (`evaluate_indexmem.py`) field for field.
     #
     # Defaults (`rollouts=1`, `do_sample=False`) are the greedy single-trace path every earlier
     # result used, bitwise -- `KVPressTextGenerationPipeline._pick_token` falls back to `argmax`
@@ -101,17 +102,19 @@ class EvaluationConfig:
     output_dir: str = "./results"
     log_level: str = "INFO"
 
-    # Data-parallel sharding, mirroring evaluate_sparse.py. num_shards > 1 makes this process
-    # evaluate only its slice of the contexts and write a parquet shard *without* scoring: a
-    # per-shard metric is a per-task mean over an arbitrary subset of rows and is not comparable to
-    # anything. Use evaluate_sharded.py, which launches the shards and scores their union once.
+    # Data-parallel sharding, mirroring the IndexMem++ sparse-attention driver
+    # (`evaluate_indexmem.py`). num_shards > 1 makes this process evaluate only its slice of the
+    # contexts and write a parquet shard *without* scoring: a per-shard metric is a per-task mean
+    # over an arbitrary subset of rows and is not comparable to anything. Use evaluate_sharded.py,
+    # which launches the shards and scores their union once.
     shard_index: int = 0
     num_shards: int = 1
-    # Sharding axis, mirroring evaluate_sparse.py. "context" is the default and right for every
-    # benchmark with long shared contexts. "row" exists for the reasoning benchmarks: math500 and
-    # aime25 put the whole problem in `question` and leave `context` a single space, so ALL rows
-    # share ONE context and the round-robin over contexts hands every row to shard 0 while the other
-    # GPUs idle. There is no prefill to share at 4 tokens, so splitting by row costs nothing there.
+    # Sharding axis, mirroring the IndexMem++ sparse-attention driver. "context" is the default and
+    # right for every benchmark with long shared contexts. "row" exists for the reasoning
+    # benchmarks: math500 and aime25 put the whole problem in `question` and leave `context` a
+    # single space, so ALL rows share ONE context and the round-robin over contexts hands every row
+    # to shard 0 while the other GPUs idle. There is no prefill to share at 4 tokens, so splitting
+    # by row costs nothing there.
     shard_by: str = "context"
     # Set by evaluate_sharded.py so every shard writes into the one directory the driver chose.
     # get_results_dir uniquifies by appending a counter when the directory exists, so N shards each
@@ -534,8 +537,9 @@ class EvaluationRunner:
             # transformers >=4.56 dev injects `dtype=` into the model constructor when the caller
             # supplies none, and Qwen3ForCausalLM.__init__ rejects it:
             #   TypeError: Qwen3ForCausalLM.__init__() got an unexpected keyword argument 'dtype'
-            # Pinning the dtype explicitly avoids the injection. Same try/except shape as
-            # evaluate_sparse.py:619-621, which hit the mirror-image version of this.
+            # Pinning the dtype explicitly avoids the injection. The IndexMem++ sparse-attention
+            # driver hit the mirror-image version of this, which is why it pins the dtype up front
+            # instead of retrying.
             #
             # CATCHING ValueError TOO IS LOAD-BEARING. `pipeline()` does not propagate the
             # TypeError: `infer_framework_load_model` catches every per-class failure and re-raises
@@ -572,8 +576,8 @@ class EvaluationRunner:
         """
 
         self.df["predicted_answer"] = None  # type: ignore[index]
-        # Sampling rule and rollouts, matching evaluate_sparse.py exactly so the dense reference
-        # and the sparse arm are the same measurement apart from compression.
+        # Sampling rule and rollouts, matching the IndexMem++ sparse-attention driver exactly so
+        # the dense reference and the sparse arm are the same measurement apart from compression.
         self.pipeline.sampling = (  # type: ignore[union-attr]
             {
                 "temperature": self.config.temperature,
@@ -637,11 +641,11 @@ class EvaluationRunner:
             ), "Inconsistent 'answer_prefix' within the same context group detected."
 
             logger.info("Starting inference...")
-            # Incremental progress log, mirroring evaluate_sparse.py. One JSON line per completed
-            # trace, fsync'd per chunk, replayed on restart so only the missing traces are
-            # generated. Without it a run is all-or-nothing: math500/aime25 put every row under
-            # ONE context, so a whole shard is a single pipeline() call and a kill at 99% leaves
-            # nothing. That cost 6h38m when the filesystem filled mid-run.
+            # Incremental progress log, mirroring the IndexMem++ sparse-attention driver. One JSON
+            # line per completed trace, fsync'd per chunk, replayed on restart so only the missing
+            # traces are generated. Without it a run is all-or-nothing: math500/aime25 put every
+            # row under ONE context, so a whole shard is a single pipeline() call and a kill at 99%
+            # leaves nothing. That cost 6h38m when the filesystem filled mid-run.
             #
             # `_results_dir` is set by run(); when it is None (this method driven directly, as the
             # diagnostics do) the log is simply skipped.
@@ -785,7 +789,7 @@ class EvaluationRunner:
         # Resolved once and stashed: _run_inference writes its progress log here. Must not
         # call get_results_dir twice -- it uniquifies against the filesystem and creates the
         # directory, so a second call returns a DIFFERENT path and the log would be orphaned
-        # from the run that wrote it (the exact bug hit in evaluate_sparse.py).
+        # from the run that wrote it (a bug that was actually hit, not a hypothetical).
         results_dir = self._results_dir = self.config.get_results_dir(output_dir)
         predictions_filename = results_dir / "predictions.csv"
         metrics_filename = results_dir / "metrics.json"

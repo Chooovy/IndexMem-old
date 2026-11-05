@@ -10,12 +10,6 @@ MASK_NEG = -10000.0
 TOPK_SCRATCH_BUDGET = 16000000
 
 
-def resolve_cache_budget(k_len: int, cache_budget: int | None, keep_ratio: float) -> int:
-    if cache_budget is None:
-        cache_budget = max(1, int(k_len * keep_ratio))
-    return max(1, min(int(cache_budget), k_len))
-
-
 def forced_support_positions(
     q_index: torch.Tensor, *, sink_size: int, window_size: int, query_offset: int, k_len: int
 ) -> torch.Tensor:

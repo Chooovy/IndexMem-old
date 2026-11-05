@@ -15,6 +15,17 @@ MAX_POSITION = (1 << POS_BITS) - 1
 
 
 def rank_key(score: torch.Tensor, pos: torch.Tensor) -> torch.Tensor:
+    """Pack a score and a position into one monotone int64, so eviction is a total order.
+
+    The position occupies the low ``POS_BITS`` bits and breaks ties in favour of the older
+    entry. Beyond ``MAX_POSITION`` it would carry into the score and reorder the ranking
+    silently, which is why the bound is checked rather than documented.
+    """
+    if pos.numel() and int(pos.max()) > MAX_POSITION:
+        raise ValueError(
+            f"key position {int(pos.max())} exceeds the {POS_BITS}-bit field this ranking packs "
+            f"positions into (max {MAX_POSITION}); eviction order would be corrupted"
+        )
     bits = score.float().contiguous().view(torch.int32).to(torch.int64)
     mono = torch.where(bits >= 0, bits, -(bits & 2147483647))
     return (mono << POS_BITS) - pos.to(torch.int64)
@@ -173,10 +184,25 @@ class PagedKVPool:
         keep_pool = in_pool.view(1, -1) & (horizon <= dl.to(torch.int64))
         is_sink = pos_ax < n_sink
         is_local = pos_ax > horizon
-        take = self.take[rows]
         flat_row = torch.arange(rows.start, rows.stop, device=self.device)
         for h in range(self.n_kv_heads):
             row = int(flat_row[h])
+            if k_len <= int(budget[h]):
+                # This head can hold the whole context. The sparse layout below pins the local
+                # window at the top of the row and reports `filled = budget[h]`, so a head whose
+                # budget exceeds `k_len` would leave the slots between the pool and that window
+                # unwritten while attention still reads them as zeros. Give the row the
+                # contiguous layout instead.
+                self._commit_row_whole(
+                    row,
+                    h,
+                    key=key,
+                    value=value,
+                    score_intercept=score_intercept,
+                    log_retention_rate=log_retention_rate,
+                    k_len=k_len,
+                )
+                continue
             n_s = int(is_sink.sum())
             if n_s:
                 slots = torch.arange(n_s, device=self.device)
@@ -210,39 +236,49 @@ class PagedKVPool:
         self.seen[seq] = k_len
 
     @torch.no_grad()
+    def _commit_row_whole(self, row, h, *, key, value, score_intercept, log_retention_rate, k_len) -> None:
+        (n_sink, n_local) = (self.n_sink, self.n_local)
+        slots = torch.arange(k_len, device=self.device)
+        self._write_kv(torch.full_like(slots, row), slots, key[h], value[h])
+        n_pool = max(k_len - n_local - n_sink, 0)
+        if n_pool:
+            keys = torch.arange(n_sink, n_sink + n_pool, device=self.device)
+            self.pool_pos[row, :n_pool] = keys
+            self.pool_score_intercept[row, :n_pool] = score_intercept[h, keys]
+            if self.pool_log_retention_rate is not None:
+                self.pool_log_retention_rate[row, :n_pool] = log_retention_rate[h, keys]
+            sc = (
+                score_intercept[h, keys]
+                if log_retention_rate is None
+                else score_intercept[h, keys] + log_retention_rate[h, keys] * (float(k_len - 1) / self.age_scale)
+            )
+            self.pool_key[row, :n_pool] = rank_key(sc, keys)
+        self.pool_live[row] = n_pool
+        n_l = max(min(k_len - n_sink, n_local), 0)
+        if n_l:
+            w = torch.arange(k_len - n_l, k_len, device=self.device)
+            self.ring_slot[row, :n_l] = w
+            self.ring_pos[row, :n_l] = w
+            self.ring_score_intercept[row, :n_l] = score_intercept[h, w]
+            if self.ring_log_retention_rate is not None:
+                self.ring_log_retention_rate[row, :n_l] = log_retention_rate[h, w]
+            self.ring_head[row] = 0
+            self.ring_count[row] = n_l
+        self.filled[row] = k_len
+
     def _commit_whole(self, layer_idx, seq, *, key, value, score_intercept, log_retention_rate, k_len) -> None:
         rows = self.rows_for(layer_idx, seq)
         flat_row = torch.arange(rows.start, rows.stop, device=self.device)
-        (n_sink, n_local) = (self.n_sink, self.n_local)
-        slots = torch.arange(k_len, device=self.device)
         for h in range(self.n_kv_heads):
-            row = int(flat_row[h])
-            self._write_kv(torch.full_like(slots, row), slots, key[h], value[h])
-            n_pool = max(k_len - n_local - n_sink, 0)
-            if n_pool:
-                keys = torch.arange(n_sink, n_sink + n_pool, device=self.device)
-                self.pool_pos[row, :n_pool] = keys
-                self.pool_score_intercept[row, :n_pool] = score_intercept[h, keys]
-                if self.pool_log_retention_rate is not None:
-                    self.pool_log_retention_rate[row, :n_pool] = log_retention_rate[h, keys]
-                sc = (
-                    score_intercept[h, keys]
-                    if log_retention_rate is None
-                    else score_intercept[h, keys] + log_retention_rate[h, keys] * (float(k_len - 1) / self.age_scale)
-                )
-                self.pool_key[row, :n_pool] = rank_key(sc, keys)
-            self.pool_live[row] = n_pool
-            n_l = max(min(k_len - n_sink, n_local), 0)
-            if n_l:
-                w = torch.arange(k_len - n_l, k_len, device=self.device)
-                self.ring_slot[row, :n_l] = w
-                self.ring_pos[row, :n_l] = w
-                self.ring_score_intercept[row, :n_l] = score_intercept[h, w]
-                if self.ring_log_retention_rate is not None:
-                    self.ring_log_retention_rate[row, :n_l] = log_retention_rate[h, w]
-                self.ring_head[row] = 0
-                self.ring_count[row] = n_l
-            self.filled[row] = k_len
+            self._commit_row_whole(
+                int(flat_row[h]),
+                h,
+                key=key,
+                value=value,
+                score_intercept=score_intercept,
+                log_retention_rate=log_retention_rate,
+                k_len=k_len,
+            )
         self.seen[seq] = k_len
 
     @torch.no_grad()

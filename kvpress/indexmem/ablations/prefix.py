@@ -20,7 +20,6 @@ class PrefixRetentionScorerConfig(RetentionScorerConfig):
 
 
 class PrefixRetentionScorer(RetentionScorer):
-    is_query_independent = True
 
     def __init__(self, config: PrefixRetentionScorerConfig):
         super().__init__(config)

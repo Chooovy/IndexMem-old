@@ -5,7 +5,7 @@ cache_budget: 512
 sink_size: 4
 window_size: 128
 cmp_slots: 0
-head_budget: static
+head_budget: mass
 min_head_budget: 128
 decode_batch: 4
 max_new_tokens: 16384

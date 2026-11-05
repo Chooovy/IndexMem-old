@@ -91,7 +91,6 @@ class RetentionScorerConfig:
 
 class RetentionScorer(nn.Module):
     GATE_SCALE_INIT = staticmethod(lambda _n_heads=None: 1.0)
-    is_query_independent = True
 
     def __init__(self, config: RetentionScorerConfig):
         super().__init__()
@@ -176,38 +175,6 @@ class RetentionScorer(nn.Module):
         pos = torch.arange(key_offset, key_offset + k_len, device=scores.device, dtype=scores.dtype)
         age = (float(query_pos) - pos).clamp(min=0.0) / self.age_scale
         return scores + log_retention_rate * age
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        cos: torch.Tensor | None = None,
-        sin: torch.Tensor | None = None,
-        mask: torch.Tensor | None = None,
-        key_hidden_states: torch.Tensor | None = None,
-        key_cos: torch.Tensor | None = None,
-        key_sin: torch.Tensor | None = None,
-        query_offset: int | None = None,
-    ) -> torch.Tensor:
-        keys = hidden_states if key_hidden_states is None else key_hidden_states
-        q_len = hidden_states.shape[1]
-        (base, log_retention_rate) = self._score_and_decay(keys)
-        if log_retention_rate is None:
-            scores = self.expand_to_pairs(base, q_len)
-        else:
-            k_len = keys.shape[1]
-            if query_offset is None:
-                query_offset = k_len - q_len
-            q_pos = torch.arange(q_len, device=base.device, dtype=base.dtype) + query_offset
-            k_pos = torch.arange(k_len, device=base.device, dtype=base.dtype)
-            age = (q_pos.view(-1, 1) - k_pos.view(1, -1)) / self.age_scale
-            scores = base.unsqueeze(2) + log_retention_rate.unsqueeze(2) * age
-        if mask is not None:
-            scores = scores + mask.to(scores.dtype)
-        return scores
-
-    def expand_to_pairs(self, scores: torch.Tensor, q_len: int) -> torch.Tensor:
-        (bsz, n_heads, k_len) = scores.shape
-        return scores.unsqueeze(2).expand(bsz, n_heads, q_len, k_len)
 
     @property
     def idx_dim(self) -> int:

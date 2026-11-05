@@ -131,7 +131,7 @@ class IndexMemEvaluationRunner:
         model = (
             AutoModelForCausalLM.from_pretrained(
                 cfg.model,
-                torch_dtype=getattr(torch, cfg.dtype),
+                dtype=getattr(torch, cfg.dtype),
                 attn_implementation=cfg.attn_implementation,
             )
             .to(cfg.device)

@@ -179,3 +179,7 @@ cython_debug/
 /results_indexmem/
 *.pt
 *.safetensors
+
+# Manuscript PDF, kept alongside the code but not part of the release
+0_main.pdf
+*.pdf

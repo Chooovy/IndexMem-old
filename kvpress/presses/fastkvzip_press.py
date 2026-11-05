@@ -101,7 +101,7 @@ def load_fastkvzip(model_name: str = "Qwen/Qwen3-8B", device: str = "cuda"):
         module.load_state_dict(weight)
         modules.append(module)
 
-    print(f"load gate {gate_id} ({module})")
+    logger.info("loaded Fast-KVzip gate %s (%d layers)", gate_id, len(modules))
     return modules
 
 

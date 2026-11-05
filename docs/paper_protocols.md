@@ -1,6 +1,6 @@
 # Paper protocols and known gaps
 
-This refactor starts from `Chooovy/kvpress@03b5caf05eefd27f57c2c87a71798c43d4720a09`. Terminology and retained ablations follow manuscript revision `617e4d05e4c0e0a28fdcbb14b7ed4fcfe99c1e58`.
+This document records how the code in this repository relates to the numbers reported in the paper. Terminology and the retained ablations follow the manuscript.
 
 ## Execution paths
 
@@ -12,11 +12,11 @@ The documented final method uses retained-mass allocation and 64 CMP slots withi
 
 - Recorded Math500 runs use physical eviction, static head budgets, no CMP, and decode batch 4. The K=512 table uses floor 128; K=1024 uses floor 256. Recorded generation length is 16,384, while the manuscript describes 32,768. The K=512 record includes 696 resumed traces; a new run does not reproduce that interrupted sampling stream.
 - Recorded AIME25 runs use physical eviction, static head budgets, no CMP, decode batch 4, and generation length 32,768. K=1024 uses floor 256; K=2048 uses floor 512.
-- The evaluation presets expose those recorded settings. They are not a claim that the final-method defaults reproduce every published number.
+- The shipped Math500/AIME25 presets use retained-mass head allocation, while the recorded runs above used offline head-budget tables, so the presets and those runs differ. They otherwise expose the recorded settings, and they are not a claim that the final-method defaults reproduce every published number.
 
 ## Retained ablations
 
-The implementation retains linear/MLP/conv/RNN/prefix/KVzip scorers; CE, LongCE, forward KL, reverse KL, and the 0.9 RKL + 0.1 CE mixture; protected-region and retention-rate controls; uniform, permuted, offline, and mass head allocation; CMP on/off; existing joint CE training; and the standalone Linear/TTT compensation diagnostic.
+The implementation retains linear/MLP/conv/RNN/prefix/KVzip scorers; CE, LongCE, forward KL, reverse KL, and the 0.9 RKL + 0.1 CE mixture; protected-region and retention-rate controls; uniform (`uniform`), permuted (`shuffle`), offline (`static`), and retained-mass (`mass`) head allocation; CMP on/off; existing joint CE training; and the standalone Linear/TTT compensation diagnostic.
 
 The no-protected-region table entry comes from CE training. It is not a reverse-KL/no-pin experiment. Offline allocation tables must come from the matching model, training data, total budget, and floor. Regenerating a table without the original fitting inputs does not establish exact reproduction of the paper row.
 

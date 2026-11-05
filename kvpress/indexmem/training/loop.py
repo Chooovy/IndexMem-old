@@ -29,6 +29,12 @@ def train_loop(
     total_steps = sum(count for _, count in stages)
     stop_step = min(total_steps, max_steps) if max_steps is not None else total_steps
     accumulation_steps = config.global_batch_size // (data_world_size * config.batch_size)
+    if accumulation_steps < 1:
+        raise ValueError(
+            f"global_batch_size={config.global_batch_size} is smaller than "
+            f"data_world_size * batch_size = {data_world_size} * {config.batch_size}; "
+            "no micro-batch would run and every step would report a zero loss"
+        )
     started = time.monotonic()
     stage_start = 0
     output = Path(config.out)

@@ -7,7 +7,6 @@ from __future__ import annotations
 import torch
 from torch.nn.attention.flex_attention import create_block_mask, flex_attention
 
-FLEX_BLOCK = 128
 _flex_compiled = None
 _block_mask_compiled = None
 _BLOCK_MASK_DYNAMIC = True

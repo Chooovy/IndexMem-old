@@ -41,7 +41,6 @@ class RecurrentRetentionScorerConfig(RetentionScorerConfig):
 
 
 class RecurrentRetentionScorer(RetentionScorer):
-    is_query_independent = True
 
     def __init__(self, config: RecurrentRetentionScorerConfig):
         super().__init__(config)
@@ -82,7 +81,6 @@ class RecurrentRetentionScorer(RetentionScorer):
         return self._cache_len
 
     def state_readout(self, x: torch.Tensor) -> torch.Tensor:
-        bsz = x.shape[0]
         acc = torch.promote_types(x.dtype, torch.float32)
         u = self.state_input_proj(x).to(acc)
         if self.gate_mode == "learned":
@@ -103,7 +101,10 @@ class RecurrentRetentionScorer(RetentionScorer):
         self, hidden_states: torch.Tensor, *, key_offset: int = 0, mask: torch.Tensor | None = None
     ) -> torch.Tensor:
         if mask is not None:
-            keep = mask if mask.dtype == torch.bool else mask != 0
+            # The gated scan carries every preceding state forward, and this readout has no way
+            # to drop masked positions from that state, so honouring the mask on the output
+            # scores alone would hide padding that already entered the history.
+            raise NotImplementedError("the recurrent scorer does not support a key mask")
         x = self.in_norm(hidden_states)
         a = self.history_norm(self.state_readout(x))
         if self.input_proj is not None:

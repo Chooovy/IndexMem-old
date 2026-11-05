@@ -2,7 +2,7 @@
   "model": "Qwen/Qwen3-8B",
   "tokenized": "data/longmino_tokenized",
   "out": "checkpoints/indexmem",
-  "subsets": ["2e15", "2e16", "synth_cwe", "synth_rex"],
+  "subsets": ["2e16", "2e17"],
   "scorer": {
     "kind": "mlp",
     "mid_dim": 256,

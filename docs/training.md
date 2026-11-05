@@ -15,7 +15,7 @@ python -m scripts.pretokenize_longmino \
   --model Qwen/Qwen3-8B \
   --data-root data/longmino_raw \
   --out data/longmino_tokenized \
-  --subsets 2e15 2e16 synth_cwe synth_rex \
+  --subsets 2e16 2e17 \
   --sequence-length 65536 --minimum-tokens 65536 --workers 8
 ```
 

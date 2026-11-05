@@ -34,7 +34,7 @@ def main():
     model = (
         AutoModelForCausalLM.from_pretrained(
             args.model,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             attn_implementation="sdpa",
         )
         .to(args.device)

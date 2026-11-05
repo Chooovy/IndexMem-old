@@ -25,7 +25,7 @@ from kvpress.indexmem import IndexMemConfig, IndexMemTextGenerationPipeline
 
 model_id = "Qwen/Qwen3-8B"
 model = AutoModelForCausalLM.from_pretrained(
-    model_id, torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2"
+    model_id, dtype=torch.bfloat16, attn_implementation="flash_attention_2"
 ).cuda().eval()
 pipeline = IndexMemTextGenerationPipeline(
     model=model,
@@ -50,19 +50,19 @@ torchrun --standalone --nproc_per_node=8 scripts/train.py --config configs/train
 python evaluation/evaluate_indexmem.py --config_file configs/evaluation/ruler.yaml --scorer_checkpoint checkpoints/indexmem.pt
 ```
 
-The main recipe trains only the scorer with reverse KL, MLP width 256, learned retention rates, and gate mass 256. It uses 300 steps at 8K followed by 300 steps at 16K, global batch 8, and the LongMino `2e15`, `2e16`, `synth_cwe`, and `synth_rex` mixture. Data preparation and the optional training dependencies are described in [training](docs/training.md).
+The main recipe trains only the scorer with reverse KL, MLP width 256, learned retention rates, and gate mass 256. It uses 300 steps at 8K followed by 300 steps at 16K, global batch 8, and the LongMino `2e16` and `2e17` subsets. Data preparation and the optional training dependencies are described in [training](docs/training.md).
 
-Evaluation presets cover RULER, LongBench, Math500, and AIME25. Read [paper protocols and gaps](docs/paper_protocols.md) before comparing results with the manuscript. The Math500/AIME25 presets require the appropriate offline head-budget table.
+Evaluation presets cover RULER, LongBench, Math500, and AIME25. Read [paper protocols and gaps](docs/paper_protocols.md) before comparing results with the manuscript. The Math500/AIME25 presets use retained-mass head allocation and do not need an offline head-budget table.
 
 ## Read the implementation
 
 | Directory | Responsibility |
 |---|---|
 | `kvpress/indexmem/` | Retention scorer, explicit checkpoints, configuration, public pipeline |
-| `training/` | Data, shared training loop, objectives, optimization, sequence parallelism |
-| `inference/` | Prefill, head budgets, paged KV, centroid memory, generation |
-| `kernels/` | Gated training attention, sparse prefill, sparse/paged reads |
-| `ablations/` | Alternative scorers, offline allocation, compensation diagnostics |
+| `kvpress/indexmem/training/` | Data, shared training loop, objectives, optimization, sequence parallelism |
+| `kvpress/indexmem/inference/` | Prefill, head budgets, paged KV, centroid memory, generation |
+| `kvpress/indexmem/kernels/` | Gated training attention, sparse prefill, sparse/paged reads |
+| `kvpress/indexmem/ablations/` | Alternative scorers, offline allocation, compensation diagnostics |
 
 | Code | Paper meaning |
 |---|---|
@@ -93,14 +93,16 @@ The diagnostic input contains `queries`, `evicted_keys`, and `evicted_values` te
 
 ## Validate and benchmark
 
+`pytest` is in the `dev` dependency group and is not installed by the commands above; add it with `python -m pip install pytest`.
+
 ```bash
-python -m pytest tests/indexmem
+python -m pytest tests/indexmem tests/evaluation
 CUDA_VISIBLE_DEVICES=0 python -m scripts.benchmark_decode --model /path/to/Qwen3-8B --scorer-checkpoint checkpoints/indexmem.pt --prompts prompts.json --length 8192 --batch 4 --method indexmem --output results/decode.jsonl
 ```
 
 The benchmark accepts a JSON list of documents containing `token_ids`. It excludes prefill, initial compression, the first output token, and state restoration from timing. Each timed decode step includes scoring, eviction, CMP updates, and greedy token selection. Defaults are three documents, two warmups, five repeats, and 256 steps. Run with `--method full` for Full-KV. Throughput is total batch tokens divided by total measured seconds; errors and OOMs are recorded separately.
 
-CPU test skips do not count as CUDA validation. See [validation](docs/validation.md) for the tested revision and evidence.
+CPU test skips do not count as CUDA validation.
 
 ## License
 

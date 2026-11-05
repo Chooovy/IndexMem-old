@@ -5,11 +5,11 @@
 Data-parallel driver for :mod:`evaluate`: split ONE (dataset, length, press) configuration across
 N GPUs and score the union.
 
-The eviction-press counterpart of :mod:`evaluate_sparse_sharded`. That driver only works for the
-GQA-indexer *sparse attention* path -- ``evaluate_sparse.py`` requires an ``--indexer_ckpt`` and
-never builds a press -- so an ordinary eviction press (``kvzip``, ``snapkv``, ...) had no way to use
-more than one GPU for a single configuration. ``evaluate_dense_baseline.sh`` parallelizes over
-*lengths*, one per GPU, which leaves 7 GPUs idle whenever you want one number.
+The eviction-press counterpart of the IndexMem++ sharded driver (``evaluate_indexmem_sharded.py``).
+That driver only works for the GQA-indexer *sparse attention* path -- it requires an
+``--indexer_ckpt`` and never builds a press -- so an ordinary eviction press (``kvzip``,
+``snapkv``, ...) had no way to use more than one GPU for a single configuration. Sweep scripts that
+parallelize over *lengths*, one per GPU, leave 7 GPUs idle whenever you want one number.
 
 That is worth fixing specifically for KVzip: its scoring pass is a second, chunked forward over the
 whole context, so it costs 2-3x prefill on top of generation. At RULER 16K a single GPU is hours.
@@ -23,7 +23,7 @@ CUDA context per process, and the model is loaded per GPU anyway). Shards write 
 files; this driver concatenates them and scores ONCE over the union, so the metric is identical to
 what the unsharded run would have produced.
 
-The design notes in :mod:`evaluate_sparse_sharded` apply verbatim and are the reason for each
+The design notes for the IndexMem++ sharded driver apply verbatim and are the reason for each
 choice here: shard by *context* rather than by row (a context's questions share one prefill),
 *parquet* rather than CSV for the shard files (CSV stringifies RULER's ndarray of reference answers
 into ``"['2166941']"``, which the scorers then iterate character by character -- 11 phantom
@@ -190,9 +190,9 @@ def main(
     # is `i + r*STRIDE`, so a correct union still has NO duplicate index. Shards written before
     # that fix renumbered each shard from 0, making the index meaningless across shards; those
     # cannot be told apart from a real overlap locally, so they are refused with an explanation.
-    # See the longer note in evaluate_sparse_sharded.py -- keying on `(index, rollout)` or on
-    # `question` both look right and are both wrong (RULER has 4959 distinct questions in 6500
-    # rows, so content is not an identity either).
+    # Note on the alternatives: keying on `(index, rollout)` or on `question` both look right and
+    # are both wrong (RULER has 4959 distinct questions in 6500 rows, so content is not an identity
+    # either).
     if df.index.has_duplicates:
         rollouts = int(df["rollout"].nunique()) if "rollout" in df.columns else 1
         if rollouts > 1:
@@ -207,7 +207,7 @@ def main(
             "double-count it. This means the shards did not derive from the identical frame."
         )
     if "rollout" in df.columns:
-        from evaluate_sparse import ROLLOUT_STRIDE
+        from evaluate import ROLLOUT_STRIDE
 
         counts = (df.index % ROLLOUT_STRIDE).value_counts().unique()
         if len(counts) > 1:
@@ -222,7 +222,7 @@ def main(
     # Write the predictions BEFORE scoring. Several scorers (RULER's among them) mutate
     # df["predicted_answer"] in place -- it strips control characters, newlines included -- so
     # scoring first would persist a scrubbed transcript and the artifact would silently differ from
-    # the unsharded run's. evaluate.py and evaluate_sparse.py write in this order for the same
+    # the unsharded run's. evaluate.py and the IndexMem++ drivers write in this order for the same
     # reason.
     df[list(set(df.columns) - {"context"})].to_csv(str(results_dir / "predictions.csv"), index=False)
 
@@ -233,11 +233,11 @@ def main(
     with open(results_dir / "config.yaml", "w") as f:
         saved = asdict(config)
         saved.update({"num_shards": num_shards, "shard_index": None, "sharded_devices": gpu_ids})
-        # Resume provenance, recovered from the shard logs -- see the fuller note in
-        # evaluate_sparse_sharded.py. In a sharded run this driver writes config.yaml and never
-        # learns what the shards replayed, so a resumed run would record `resumed_traces: 0` and
-        # read as clean. A resumed run reseeds only for the traces it still generates, so it is not
-        # bit-identical to a clean one and must not be compared as though the seeds were paired.
+        # Resume provenance, recovered from the shard logs -- the IndexMem++ sharded driver carries
+        # the same note. In a sharded run this driver writes config.yaml and never learns what the
+        # shards replayed, so a resumed run would record `resumed_traces: 0` and read as clean. A
+        # resumed run reseeds only for the traces it still generates, so it is not bit-identical to
+        # a clean one and must not be compared as though the seeds were paired.
         resumed = 0
         for log in sorted(results_dir.glob("shard*.log")):
             try:
