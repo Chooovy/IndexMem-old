@@ -1,8 +1,25 @@
-# IndexMem++
+<h1 align="center">IndexMem++</h1>
+
+<p align="center"><strong>The Gating Mechanism of KV Cache Eviction</strong></p>
+
+<p align="center">
+  <a href="#"><img src="https://img.shields.io/badge/arXiv-coming_soon-bb9af7?style=flat-square&logo=arxiv&logoColor=white&labelColor=1a1b26" alt="Paper on arXiv"></a>
+  <a href="https://github.com/Chooovy/IndexMem"><img src="https://img.shields.io/badge/GitHub-Code-7aa2f7?style=flat-square&logo=github&logoColor=white&labelColor=1a1b26" alt="Code on GitHub"></a>
+  <a href="https://huggingface.co/collections/marcusguhao/indexmem-6a8306e81cb4455d3c35ca04"><img src="https://img.shields.io/badge/Hugging_Face-Models-e0af68?style=flat-square&logo=huggingface&logoColor=white&labelColor=1a1b26" alt="Models on Hugging Face"></a>
+</p>
 
 IndexMem++ learns a per-token retention score for each KV head. At inference, it allocates cache space by retained attention mass and represents evicted entries with centroid memory (CMP).
 
 This branch contains the main method and the implemented paper ablations. It builds on [NVIDIA KVPress](https://github.com/NVIDIA/kvpress) and retains its general-purpose presses and text preprocessing. IndexMem++ supports Qwen3-0.6B, Qwen3-4B, and Qwen3-8B.
+
+## Models
+
+Each checkpoint is a retention gate for a frozen Qwen3 backbone; the backbone itself is the unmodified Qwen release.
+
+| Base model | Gate checkpoint | RULER 8K, 75% compression |
+| --- | --- | --- |
+| [Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B) | [IndexMem-Qwen3-8B](https://huggingface.co/marcusguhao/IndexMem-Qwen3-8B) | 90.14 (Full-KV 93.86) |
+| [Qwen3-4B](https://huggingface.co/Qwen/Qwen3-4B) | [IndexMem-Qwen3-4B](https://huggingface.co/marcusguhao/IndexMem-Qwen3-4B) | 83.89 (Full-KV 92.41) |
 
 ## Install
 
@@ -16,10 +33,11 @@ python -m pip install -e '.[indexmem,eval]'
 
 ## Generate
 
-Convert an existing scorer checkpoint first; see [checkpoint conversion](docs/checkpoints.md).
+Download a released gate and attach it to the matching backbone. To convert a checkpoint written by older training code, see [checkpoint conversion](docs/checkpoints.md).
 
 ```python
 import torch
+from huggingface_hub import hf_hub_download
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from kvpress.indexmem import IndexMemConfig, IndexMemTextGenerationPipeline
 
@@ -30,7 +48,7 @@ model = AutoModelForCausalLM.from_pretrained(
 pipeline = IndexMemTextGenerationPipeline(
     model=model,
     tokenizer=AutoTokenizer.from_pretrained(model_id),
-    scorer_checkpoint="checkpoints/indexmem.pt",
+    scorer_checkpoint=hf_hub_download("marcusguhao/IndexMem-Qwen3-8B", "indexmem.pt"),
     config=IndexMemConfig(cache_budget=2048),
 )
 result = pipeline("Your document", question="Your question", max_new_tokens=256)
